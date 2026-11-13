@@ -3,7 +3,8 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const ID_RE = /^[abcdefghjkmnpqrstuvwxyz23456789]{8}$/;
-  const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // server limit (after base64 encoding)
+  const MAX_IMAGE_BYTES = Math.floor((MAX_UPLOAD_BYTES * 3) / 4) - 64 * 1024;
 
   const sections = ['compose', 'created', 'open', 'pin-gate', 'view', 'missing'];
   function show(...ids) {
@@ -243,6 +244,10 @@
     btn.disabled = true;
     btn.textContent = '업로드 중…';
     try {
+      const estimated = new Blob([text]).size + pendingImages.reduce((n, i) => n + Math.ceil(i.blob.size / 3) * 4, 0);
+      if (estimated > MAX_UPLOAD_BYTES) {
+        throw new Error(`용량이 너무 큽니다. 이미지 합계 약 ${fmtBytes(MAX_IMAGE_BYTES)}까지 가능합니다.`);
+      }
       const items = [];
       if (text.trim()) items.push({ type: 'text', text });
       for (const img of pendingImages) {

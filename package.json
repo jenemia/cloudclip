@@ -1,13 +1,15 @@
 {
   "name": "cloudclip",
   "version": "1.0.0",
+  "private": true,
+  "type": "module",
   "description": "Paste text/images on one device, read them on another. Clips expire after 1 hour.",
-  "main": "server.js",
-  "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
+    "dev": "wrangler pages dev public --kv CLIPS --port 8788 --compatibility-date 2026-10-01",
     "test": "node --test test/*.test.js"
   },
-  "engines": { "node": ">=18" },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  },
   "license": "MIT"
 }

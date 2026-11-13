@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#4f46e5">
+  <title>CloudClip</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">📋 CloudClip</a>
+    <span class="tagline">폰 ↔ PC 클립보드 · 1시간 후 자동 삭제</span>
+  </header>
+
+  <main>
+    <!-- ===== 새 클립 만들기 ===== -->
+    <section id="compose" class="card" hidden>
+      <h1>붙여넣기</h1>
+      <p class="hint">텍스트나 이미지를 아래에 붙여넣으세요. (PC: <kbd>Ctrl/⌘</kbd>+<kbd>V</kbd>, 폰: 길게 눌러 붙여넣기)</p>
+
+      <textarea id="text" rows="6" placeholder="여기에 붙여넣기…" autocomplete="off" spellcheck="false"></textarea>
+
+      <div class="row">
+        <button type="button" id="btn-read-clipboard" class="secondary">📋 클립보드에서 가져오기</button>
+        <label class="secondary button">
+          🖼 사진 선택
+          <input type="file" id="file" accept="image/*" multiple hidden>
+        </label>
+      </div>
+
+      <div id="previews" class="previews"></div>
+
+      <div class="pin-row">
+        <label for="pin">비밀번호 (선택, 숫자 4자리)</label>
+        <input id="pin" class="pin" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="off" placeholder="••••">
+      </div>
+
+      <button type="button" id="btn-share" class="primary big">공유 링크 만들기</button>
+      <p id="compose-error" class="error" hidden></p>
+    </section>
+
+    <!-- ===== 생성 완료 ===== -->
+    <section id="created" class="card" hidden>
+      <h1>링크가 만들어졌어요</h1>
+      <p class="hint">다른 기기 브라우저에서 아래 주소로 들어가세요. <strong>1시간 후 자동 삭제</strong>됩니다.</p>
+      <div class="code" id="created-code"></div>
+      <div class="link-box">
+        <input id="created-url" readonly>
+        <button type="button" id="btn-copy-link" class="secondary">링크 복사</button>
+      </div>
+      <p id="created-pin-note" class="hint" hidden>🔒 비밀번호가 설정되어 있습니다.</p>
+      <div class="row">
+        <a id="created-open" class="button secondary" href="#">열어보기</a>
+        <a class="button secondary" href="/">새로 붙여넣기</a>
+      </div>
+    </section>
+
+    <!-- ===== 코드로 열기 ===== -->
+    <section id="open" class="card" hidden>
+      <h2>코드로 열기</h2>
+      <form id="open-form" class="link-box">
+        <input id="open-code" placeholder="예: ab3k9xyz" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64">
+        <button type="submit" class="secondary">열기</button>
+      </form>
+    </section>
+
+    <!-- ===== 비밀번호 입력 ===== -->
+    <section id="pin-gate" class="card" hidden>
+      <h1>🔒 비밀번호 입력</h1>
+      <p class="hint">이 클립은 비밀번호로 보호되어 있습니다.</p>
+      <form id="pin-form" class="pin-form">
+        <input id="pin-input" class="pin big" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="off" placeholder="••••" required>
+        <button type="submit" class="primary">확인</button>
+      </form>
+      <p id="pin-error" class="error" hidden></p>
+    </section>
+
+    <!-- ===== 클립 보기 ===== -->
+    <section id="view" class="card" hidden>
+      <div class="view-head">
+        <h1>클립</h1>
+        <span id="countdown" class="badge"></span>
+      </div>
+      <div id="items" class="items"></div>
+      <div class="row">
+        <button type="button" id="btn-copy-all" class="secondary" hidden>텍스트 모두 복사</button>
+        <a class="button secondary" href="/">새로 붙여넣기</a>
+        <button type="button" id="btn-delete" class="danger">지금 삭제</button>
+      </div>
+    </section>
+
+    <!-- ===== 없음 / 만료 ===== -->
+    <section id="missing" class="card" hidden>
+      <h1>클립을 찾을 수 없어요</h1>
+      <p id="missing-msg" class="hint">이미 만료(1시간)되었거나 삭제되었거나 주소가 잘못되었습니다.</p>
+      <a class="button primary" href="/">새로 붙여넣기</a>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -10,6 +10,7 @@
  */
 
 const http = require('node:http');
+const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -25,6 +26,14 @@ const CONFIG = {
   maxPinAttempts: 5,
   idLength: 8,
   trustProxy: process.env.TRUST_PROXY === '1',
+  // Native TLS: set both to PEM file paths to serve HTTPS directly from Node.
+  tlsCert: process.env.TLS_CERT || '',
+  tlsKey: process.env.TLS_KEY || '',
+  // With native TLS: also listen on this port and redirect plain HTTP to HTTPS (e.g. 80). 0 = off.
+  httpRedirectPort: Number(process.env.HTTP_REDIRECT_PORT) || 0,
+  // Behind a TLS-terminating proxy (TRUST_PROXY=1): redirect requests whose X-Forwarded-Proto is http.
+  forceHttps: process.env.FORCE_HTTPS === '1',
+  hstsMaxAge: process.env.HSTS_MAX_AGE !== undefined ? Number(process.env.HSTS_MAX_AGE) : 15552000, // 180 days
 };
 
 // Unambiguous alphabet (no 0/o, 1/l/i) so an id can be typed by hand on a phone.
@@ -151,8 +160,21 @@ const SECURITY_HEADERS = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
 
+function isSecure(req) {
+  if (req.socket.encrypted) return true;
+  if (CONFIG.trustProxy) {
+    const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    return proto === 'https';
+  }
+  return false;
+}
+
 function send(res, status, body, headers = {}) {
-  res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
+  const extra = {};
+  if (CONFIG.hstsMaxAge > 0 && res.req && isSecure(res.req)) {
+    extra['Strict-Transport-Security'] = `max-age=${CONFIG.hstsMaxAge}`;
+  }
+  res.writeHead(status, { ...SECURITY_HEADERS, ...extra, ...headers });
   res.end(body);
 }
 
@@ -293,6 +315,10 @@ async function handle(req, res) {
   const p = url.pathname;
   const method = req.method;
 
+  if (CONFIG.forceHttps && CONFIG.trustProxy && !isSecure(req) && p !== '/healthz') {
+    return redirectToHttps(req, res);
+  }
+
   if (p === '/api/clips' && method === 'POST') return createClip(req, res);
 
   let m = p.match(/^\/api\/clips\/([^/]+)\/meta$/);
@@ -315,34 +341,91 @@ async function handle(req, res) {
   throw httpError(404, 'Not found');
 }
 
-function createServer() {
-  return http.createServer((req, res) => {
-    handle(req, res).catch((err) => {
-      const status = err.status || 500;
-      if (status === 500) console.error(err);
-      if (res.headersSent) return res.end();
-      if (req.url.startsWith('/api/')) {
-        sendJson(res, status, { error: status === 500 ? '서버 오류가 발생했습니다.' : err.message, ...(err.extra || {}) });
-      } else {
-        send(res, status, status === 404 ? 'Not found' : 'Error', { 'Content-Type': 'text/plain; charset=utf-8' });
-      }
-    });
+function onRequest(req, res) {
+  handle(req, res).catch((err) => {
+    const status = err.status || 500;
+    if (status === 500) console.error(err);
+    if (res.headersSent) return res.end();
+    if (req.url.startsWith('/api/')) {
+      sendJson(res, status, { error: status === 500 ? '서버 오류가 발생했습니다.' : err.message, ...(err.extra || {}) });
+    } else {
+      send(res, status, status === 404 ? 'Not found' : 'Error', { 'Content-Type': 'text/plain; charset=utf-8' });
+    }
   });
+}
+
+const HOST_RE = /^[a-z0-9.-]+(:\d{1,5})?$|^\[[0-9a-f:.]+\](:\d{1,5})?$/i;
+
+function redirectToHttps(req, res, httpsPort) {
+  // Only echo back a syntactically valid Host header (prevents header/open-redirect tricks).
+  let host = String(req.headers.host || '');
+  if (!HOST_RE.test(host)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('Bad Request');
+  }
+  if (httpsPort) {
+    host = host.replace(/:\d+$/, '');
+    if (httpsPort !== 443) host += `:${httpsPort}`;
+  }
+  const pathAndQuery = req.url.startsWith('/') ? req.url : '/';
+  res.writeHead(308, { Location: `https://${host}${pathAndQuery}`, 'Cache-Control': 'no-store' });
+  res.end();
+}
+
+function loadTlsOptions() {
+  return { cert: fs.readFileSync(CONFIG.tlsCert), key: fs.readFileSync(CONFIG.tlsKey) };
+}
+
+function createServer() {
+  if (CONFIG.tlsCert && CONFIG.tlsKey) {
+    const server = https.createServer({ ...loadTlsOptions(), minVersion: 'TLSv1.2' }, onRequest);
+    // Pick up renewed certificates (e.g. certbot) without a restart.
+    const reload = () => {
+      try {
+        server.setSecureContext(loadTlsOptions());
+        console.log('TLS certificate reloaded');
+      } catch (e) {
+        console.error('TLS certificate reload failed:', e.message);
+      }
+    };
+    let debounce;
+    for (const f of [CONFIG.tlsCert, CONFIG.tlsKey]) {
+      fs.watchFile(f, { interval: 60 * 1000 }, () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(reload, 2000);
+      });
+    }
+    server.on('close', () => [CONFIG.tlsCert, CONFIG.tlsKey].forEach((f) => fs.unwatchFile(f)));
+    return server;
+  }
+  if (CONFIG.tlsCert || CONFIG.tlsKey) throw new Error('TLS_CERT and TLS_KEY must both be set');
+  return http.createServer(onRequest);
 }
 
 function start() {
   const server = createServer();
+  const secure = server instanceof https.Server;
   const timer = setInterval(() => {
     sweep();
     sweepBuckets();
   }, 30 * 1000);
   timer.unref();
   server.listen(CONFIG.port, CONFIG.host, () => {
-    console.log(`CloudClip listening on http://${CONFIG.host}:${CONFIG.port} (TTL ${CONFIG.ttlMs / 60000} min)`);
+    console.log(`CloudClip listening on ${secure ? 'https' : 'http'}://${CONFIG.host}:${CONFIG.port} (TTL ${CONFIG.ttlMs / 60000} min)`);
+    if (!secure && !CONFIG.trustProxy) {
+      console.log('  ! Plain HTTP: clipboard features need HTTPS (except on localhost). See README "HTTPS".');
+    }
   });
+  if (secure && CONFIG.httpRedirectPort) {
+    http
+      .createServer((req, res) => redirectToHttps(req, res, CONFIG.port))
+      .listen(CONFIG.httpRedirectPort, CONFIG.host, () => {
+        console.log(`  HTTP -> HTTPS redirect on port ${CONFIG.httpRedirectPort}`);
+      });
+  }
   return server;
 }
 
 if (require.main === module) start();
 
-module.exports = { createServer, CONFIG, clips, sweep, _reset: () => { clips.clear(); buckets.clear(); totalBytes = 0; } };
+module.exports = { createServer, redirectToHttps, isSecure, CONFIG, clips, sweep, _reset: () => { clips.clear(); buckets.clear(); totalBytes = 0; } };

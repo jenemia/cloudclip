@@ -1,0 +1,13 @@
+# Caddy obtains and renews a Let's Encrypt certificate for {$DOMAIN} automatically,
+# redirects HTTP -> HTTPS and proxies to the CloudClip container.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 26MB
+	}
+	reverse_proxy cloudclip:3000
+}

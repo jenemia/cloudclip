@@ -407,6 +407,14 @@
     countdownTimer = setInterval(tick, 1000);
   }
 
+  // ================= HTTPS =================
+  if (!window.isSecureContext) {
+    $('insecure').hidden = false;
+    // Only offer the link on the default port; a custom HTTP port usually has no TLS behind it.
+    if (location.port) $('insecure-link').hidden = true;
+    else $('insecure-link').href = `https://${location.host}${location.pathname}${location.search}`;
+  }
+
   // ================= ROUTING =================
   const id = location.pathname.slice(1).toLowerCase();
   if (ID_RE.test(id)) initView(id).catch(() => showMissing('불러오지 못했습니다. 네트워크를 확인하세요.'));

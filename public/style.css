@@ -123,3 +123,6 @@ input.pin.big { width: 9em; font-size: 24px; }
   opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; max-width: calc(100vw - 32px);
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.warn { background: color-mix(in srgb, #f59e0b 15%, var(--card)); border: 1px solid #f59e0b; border-radius: var(--radius); padding: 12px 16px; font-size: 14px; }
+.warn a { color: inherit; font-weight: 600; }

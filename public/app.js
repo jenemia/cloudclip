@@ -3,10 +3,15 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const ID_RE = /^[abcdefghjkmnpqrstuvwxyz23456789]{8}$/;
+  const PAGE_PATH_RE = /^\/p\/([abcdefghjkmnpqrstuvwxyz23456789]{16})\/?$/;
   const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // server limit (after base64 encoding)
   const MAX_IMAGE_BYTES = Math.floor((MAX_UPLOAD_BYTES * 3) / 4) - 64 * 1024;
+  const PAGE_POLL_MS = 5000;
+  const SAVED_PAGE_KEY = 'cloudclip.page'; // localStorage: id of this device's persistent page
 
-  const sections = ['compose', 'created', 'open', 'pin-gate', 'view', 'missing'];
+  const sections = [
+    'page-info', 'compose', 'page-clips', 'created', 'page-home', 'open', 'pin-gate', 'view', 'missing',
+  ];
   function show(...ids) {
     for (const s of sections) $(s).hidden = !ids.includes(s);
   }
@@ -25,10 +30,18 @@
     el.hidden = !msg;
   }
 
-  async function api(method, url, { body, pin } = {}) {
+  // Browser storage can be blocked (private mode, policies): never let it break the page.
+  const store = {
+    get(area, key) { try { return window[area].getItem(key); } catch { return null; } },
+    set(area, key, value) { try { window[area].setItem(key, value); } catch { /* ignore */ } },
+    del(area, key) { try { window[area].removeItem(key); } catch { /* ignore */ } },
+  };
+
+  async function api(method, url, { body, pin, pagePin } = {}) {
     const headers = {};
     if (body) headers['Content-Type'] = 'application/json';
     if (pin) headers['X-Clip-Pin'] = pin;
+    if (pagePin) headers['X-Page-Pin'] = pagePin;
     const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
     let data = {};
     try { data = await res.json(); } catch { /* ignore */ }
@@ -142,8 +155,13 @@
     });
   }
 
+  // Set while the compose box sends into a persistent page: { id, pin, onSent() }.
+  let pageCtx = null;
+  let composeReady = false;
+
   function initCompose() {
-    show('compose', 'open');
+    if (composeReady) return;
+    composeReady = true;
     const textarea = $('text');
 
     // Paste anywhere on the page: images become attachments, text goes to the textarea.
@@ -215,6 +233,12 @@
     $('open-form').addEventListener('submit', (e) => {
       e.preventDefault();
       let v = $('open-code').value.trim();
+      // A persistent page address (/p/<16 chars>) opens that page.
+      const pageMatch = v.match(/\/p\/([a-z0-9]{16})\/?$/i);
+      if (pageMatch && PAGE_PATH_RE.test(`/p/${pageMatch[1].toLowerCase()}`)) {
+        location.href = `/p/${pageMatch[1].toLowerCase()}`;
+        return;
+      }
       // Accept a full URL or just the code.
       const m = v.match(/([a-z0-9]{8})\/?$/i);
       v = m ? m[1].toLowerCase() : v.toLowerCase();
@@ -230,7 +254,8 @@
     const errEl = $('compose-error');
     setError(errEl, '');
     const text = $('text').value;
-    const pin = $('pin').value;
+    const pin = pageCtx ? '' : $('pin').value;
+    const idleLabel = pageCtx ? '이 페이지로 보내기' : '공유 링크 만들기';
 
     if (!text.trim() && pendingImages.length === 0) {
       setError(errEl, '붙여넣은 내용이 없습니다.');
@@ -253,15 +278,31 @@
       for (const img of pendingImages) {
         items.push({ type: 'image', mime: img.blob.type, name: img.name, data: await blobToBase64(img.blob) });
       }
-      const res = await api('POST', '/api/clips', { body: { items, pin: pin || undefined } });
+      const res = pageCtx
+        ? await api('POST', `/api/pages/${pageCtx.id}/clips`, { body: { items }, pagePin: pageCtx.pin })
+        : await api('POST', '/api/clips', { body: { items, pin: pin || undefined } });
       if (!res.ok) throw new Error(res.data.error || (res.status === 413 ? '용량이 너무 큽니다.' : '업로드에 실패했습니다.'));
-      showCreated(res.data, !!pin);
+      if (pageCtx) {
+        clearCompose();
+        toast('페이지로 보냈어요');
+        pageCtx.onSent(res.data);
+      } else {
+        showCreated(res.data, !!pin);
+      }
     } catch (e) {
       setError(errEl, e.message || '업로드에 실패했습니다.');
     } finally {
       btn.disabled = false;
-      btn.textContent = '공유 링크 만들기';
+      btn.textContent = idleLabel;
     }
+  }
+
+  // Clear the composed data so it is not lingering on the page.
+  function clearCompose() {
+    $('text').value = '';
+    $('pin').value = '';
+    pendingImages.splice(0).forEach((i) => URL.revokeObjectURL(i.url));
+    renderPreviews();
   }
 
   function showCreated(meta, hasPin) {
@@ -273,11 +314,7 @@
     $('btn-copy-link').onclick = async () => toast((await copyText(url)) ? '링크를 복사했어요' : '복사 실패');
     $('created-url').onclick = (e) => e.target.select();
     show('created');
-    // Clear the composed data so it is not lingering on the page.
-    $('text').value = '';
-    $('pin').value = '';
-    pendingImages.splice(0).forEach((i) => URL.revokeObjectURL(i.url));
-    renderPreviews();
+    clearCompose();
   }
 
   // ================= VIEW =================
@@ -323,13 +360,12 @@
     show('missing');
   }
 
-  function renderClip(id, clip) {
-    show('view');
-    const box = $('items');
+  // Fills `box` with one card per item (text / image) and returns the texts for "copy all".
+  function renderItems(box, items, id) {
     box.textContent = '';
     const texts = [];
 
-    clip.items.forEach((item, i) => {
+    items.forEach((item, i) => {
       const wrap = document.createElement('div');
       wrap.className = 'item';
       const actions = document.createElement('div');
@@ -368,6 +404,12 @@
       }
       box.appendChild(wrap);
     });
+    return texts;
+  }
+
+  function renderClip(id, clip) {
+    show('view');
+    const texts = renderItems($('items'), clip.items, id);
 
     const copyAll = $('btn-copy-all');
     copyAll.hidden = texts.length < 2;
@@ -412,6 +454,274 @@
     countdownTimer = setInterval(tick, 1000);
   }
 
+  // ================= PERSISTENT PAGE =================
+  const pinKey = (pid) => `cloudclip.pin.${pid}`; // sessionStorage: PIN for this tab only
+  const savedPageId = () => {
+    const v = store.get('localStorage', SAVED_PAGE_KEY);
+    return v && PAGE_PATH_RE.test(`/p/${v}`) ? v : null;
+  };
+
+  async function initHome() {
+    show('compose', 'page-home', 'open');
+    initCompose();
+
+    const pinNew = $('page-pin-new');
+    pinNew.addEventListener('input', () => { pinNew.value = pinNew.value.replace(/\D/g, '').slice(0, 4); });
+    $('btn-page-create').addEventListener('click', createPageFromHome);
+    $('btn-page-new').addEventListener('click', () => {
+      $('page-new').hidden = false;
+      $('page-saved').hidden = true;
+    });
+
+    // Offer this device's earlier page if it is still alive.
+    const saved = savedPageId();
+    if (!saved) return;
+    const meta = await api('GET', `/api/pages/${saved}/meta`).catch(() => null);
+    if (meta?.ok) {
+      $('page-saved-link').href = `/p/${saved}`;
+      $('page-saved').hidden = false;
+      $('page-new').hidden = true;
+    } else if (meta?.status === 404) {
+      store.del('localStorage', SAVED_PAGE_KEY);
+    }
+  }
+
+  async function createPageFromHome() {
+    const btn = $('btn-page-create');
+    const errEl = $('page-create-error');
+    setError(errEl, '');
+    const pin = $('page-pin-new').value;
+    if (!/^\d{4}$/.test(pin)) { setError(errEl, '비밀번호를 숫자 4자리로 입력하세요.'); return; }
+    btn.disabled = true;
+    try {
+      const res = await api('POST', '/api/pages', { body: { pin } });
+      if (!res.ok) throw new Error(res.data.error || '고정 페이지를 만들지 못했습니다.');
+      store.set('localStorage', SAVED_PAGE_KEY, res.data.id);
+      store.set('sessionStorage', pinKey(res.data.id), pin);
+      location.href = `/p/${res.data.id}`;
+    } catch (e) {
+      setError(errEl, e.message || '고정 페이지를 만들지 못했습니다.');
+      btn.disabled = false;
+    }
+  }
+
+  const page = { id: '', pin: '', expiresAt: 0, polling: false, pollTimer: 0, tickTimer: 0 };
+  const clipCards = new Map(); // clip id -> { el, badge, expiresAt, loaded, loading }
+
+  async function initPage(pid) {
+    const meta = await api('GET', `/api/pages/${pid}/meta`);
+    if (!meta.ok) return pageGone(meta.data.error, pid);
+
+    const cached = store.get('sessionStorage', pinKey(pid));
+    if (cached) {
+      const res = await api('GET', `/api/pages/${pid}`, { pagePin: cached });
+      if (res.ok) return openPage(pid, cached, res.data);
+      store.del('sessionStorage', pinKey(pid));
+      if (res.status === 404 || res.status === 410) return pageGone(res.data.error, pid);
+    }
+    showPageGate(pid);
+  }
+
+  function showPageGate(pid) {
+    show('pin-gate');
+    $('pin-gate-hint').textContent = '이 고정 페이지는 비밀번호로 보호되어 있습니다.';
+    const input = $('pin-input');
+    input.addEventListener('input', () => {
+      input.value = input.value.replace(/\D/g, '').slice(0, 4);
+      if (input.value.length === 4) $('pin-form').requestSubmit();
+    });
+    $('pin-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pin = input.value;
+      if (!/^\d{4}$/.test(pin)) return;
+      const res = await api('GET', `/api/pages/${pid}`, { pagePin: pin });
+      if (res.ok) {
+        store.set('sessionStorage', pinKey(pid), pin);
+        openPage(pid, pin, res.data);
+      } else if (res.status === 401 || res.status === 403) {
+        setError($('pin-error'), res.data.error);
+        input.value = '';
+        input.focus();
+      } else {
+        pageGone(res.data.error, pid);
+      }
+    });
+    input.focus();
+  }
+
+  function openPage(pid, pin, state) {
+    page.id = pid;
+    page.pin = pin;
+    page.expiresAt = state.expiresAt;
+    store.set('localStorage', SAVED_PAGE_KEY, pid);
+
+    // Same compose box as the home page, but it sends into this page and needs no PIN of its own.
+    pageCtx = { id: pid, pin, onSent: (data) => { page.expiresAt = data.expiresAt; pollPage(); } };
+    $('compose-title').textContent = '이 페이지로 보내기';
+    $('compose-hint').textContent = '여기에 붙여넣으면 이 페이지를 연 모든 기기에 나타나요. 클립은 1시간 뒤 삭제됩니다.';
+    $('pin-row').hidden = true;
+    $('btn-share').textContent = '이 페이지로 보내기';
+    initCompose();
+    setError($('pin-error'), '');
+    show('page-info', 'compose', 'page-clips');
+
+    const url = `${location.origin}/p/${pid}`;
+    $('page-url').value = url;
+    $('page-url').onclick = (e) => e.target.select();
+    $('btn-page-copy').onclick = async () => toast((await copyText(url)) ? '주소를 복사했어요' : '복사 실패');
+    drawQr($('page-qr'), url);
+    $('btn-page-delete').onclick = async () => {
+      if (!confirm('고정 페이지와 안에 있는 클립을 지금 모두 삭제할까요?')) return;
+      const res = await api('DELETE', `/api/pages/${pid}`, { pagePin: pin });
+      if (res.ok) pageGone('고정 페이지를 삭제했습니다.', pid);
+      else toast(res.data.error || '삭제 실패');
+    };
+
+    syncClips(state.clips);
+    clearInterval(page.pollTimer);
+    clearInterval(page.tickTimer);
+    page.pollTimer = setInterval(() => { if (!document.hidden) pollPage(); }, PAGE_POLL_MS);
+    page.tickTimer = setInterval(tickPage, 1000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && pageCtx) pollPage(); });
+    tickPage();
+  }
+
+  // Dark modules on a light background with a 4-module quiet zone, whatever the colour scheme.
+  function drawQr(canvas, text) {
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(text, 'Byte');
+      qr.make();
+      const n = qr.getModuleCount();
+      const quiet = 4;
+      const scale = Math.max(3, Math.floor(480 / (n + quiet * 2)));
+      const size = (n + quiet * 2) * scale;
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#000000';
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+        }
+      }
+    } catch {
+      canvas.hidden = true; // the address below still works without the QR code
+    }
+  }
+
+  async function pollPage() {
+    if (page.polling || !pageCtx) return;
+    page.polling = true;
+    try {
+      const res = await api('GET', `/api/pages/${page.id}`, { pagePin: page.pin });
+      if (!pageCtx) return;
+      if (res.ok) {
+        page.expiresAt = res.data.expiresAt;
+        syncClips(res.data.clips);
+      } else if ([401, 403, 404, 410].includes(res.status)) {
+        pageGone(res.data.error, page.id);
+      }
+    } catch { /* offline: the next poll tries again */ } finally {
+      page.polling = false;
+    }
+  }
+
+  function syncClips(list) {
+    const ids = new Set(list.map((c) => c.id));
+    for (const [id, card] of clipCards) {
+      if (!ids.has(id)) { card.el.remove(); clipCards.delete(id); }
+    }
+    for (const clip of list) {
+      const card = clipCards.get(clip.id) || buildClipCard(clip);
+      clipCards.set(clip.id, card);
+      if (!card.loaded && !card.loading) loadClipCard(clip.id, card);
+    }
+    const box = $('page-clip-list');
+    [...list].sort((a, b) => b.createdAt - a.createdAt).forEach((c) => box.append(clipCards.get(c.id).el)); // newest first
+    $('page-empty').hidden = clipCards.size > 0;
+  }
+
+  function buildClipCard(clip) {
+    const el = document.createElement('div');
+    el.className = 'clip-card';
+    const head = document.createElement('div');
+    head.className = 'clip-head';
+    const when = document.createElement('span');
+    when.className = 'meta';
+    when.textContent = `${new Date(clip.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 도착`;
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    const del = button('삭제', 'danger', async () => {
+      if (!confirm('이 클립을 지금 삭제할까요?')) return;
+      const res = await api('DELETE', `/api/pages/${page.id}/clips/${clip.id}`, { pagePin: page.pin });
+      if (res.ok) pollPage();
+      else toast(res.data.error || '삭제 실패');
+    });
+    head.append(when, badge, del);
+    const body = document.createElement('div');
+    body.className = 'items';
+    el.append(head, body);
+    return { el, body, badge, expiresAt: clip.expiresAt, loaded: false, loading: false };
+  }
+
+  async function loadClipCard(id, card) {
+    card.loading = true;
+    card.body.textContent = '불러오는 중…';
+    try {
+      const res = await api('GET', `/api/pages/${page.id}/clips/${id}`, { pagePin: page.pin });
+      if (res.ok) {
+        renderItems(card.body, res.data.items, id);
+        card.loaded = true;
+      } else {
+        card.body.textContent = res.data.error || '불러오지 못했습니다.';
+      }
+    } catch {
+      card.body.textContent = '불러오지 못했습니다. 네트워크를 확인하세요.';
+    } finally {
+      card.loading = false;
+    }
+  }
+
+  const fmtClock = (ms) => {
+    const t = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const s = t % 60;
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  function tickPage() {
+    if (!pageCtx) return;
+    const left = page.expiresAt - Date.now();
+    if (left <= 0) { pageGone('마지막 클립 이후 6시간이 지나 고정 페이지가 삭제되었습니다.', page.id); return; }
+    const el = $('page-countdown');
+    el.textContent = `⏱ 새 클립이 없으면 ${fmtClock(left)} 후 삭제`;
+    el.classList.toggle('soon', left < 30 * 60000);
+    for (const [id, card] of clipCards) {
+      const l = card.expiresAt - Date.now();
+      if (l <= 0) { card.el.remove(); clipCards.delete(id); continue; }
+      card.badge.textContent = `⏱ ${Math.floor(l / 60000)}:${String(Math.floor((l % 60000) / 1000)).padStart(2, '0')} 후 삭제`;
+      card.badge.classList.toggle('soon', l < 5 * 60000);
+    }
+    $('page-empty').hidden = clipCards.size > 0;
+  }
+
+  function pageGone(msg, pid) {
+    clearInterval(page.pollTimer);
+    clearInterval(page.tickTimer);
+    pageCtx = null;
+    clipCards.clear();
+    $('page-clip-list').textContent = '';
+    if (pid) {
+      store.del('sessionStorage', pinKey(pid));
+      if (savedPageId() === pid) store.del('localStorage', SAVED_PAGE_KEY);
+    }
+    showMissing(msg || '고정 페이지가 없거나 만료되었습니다.');
+  }
+
   // ================= HTTPS =================
   if (!window.isSecureContext) {
     $('insecure').hidden = false;
@@ -421,7 +731,11 @@
   }
 
   // ================= ROUTING =================
-  const id = location.pathname.slice(1).toLowerCase();
-  if (ID_RE.test(id)) initView(id).catch(() => showMissing('불러오지 못했습니다. 네트워크를 확인하세요.'));
-  else initCompose();
+  const path = location.pathname.toLowerCase();
+  const pageMatch = path.match(PAGE_PATH_RE);
+  const id = path.slice(1);
+  const netError = () => showMissing('불러오지 못했습니다. 네트워크를 확인하세요.');
+  if (pageMatch) initPage(pageMatch[1]).catch(netError);
+  else if (ID_RE.test(id)) initView(id).catch(netError);
+  else initHome();
 })();

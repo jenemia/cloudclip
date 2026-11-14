@@ -20,10 +20,28 @@
     <div id="insecure" class="warn" hidden>
       ⚠️ 보안 연결(HTTPS)이 아니라서 복사·클립보드 가져오기 기능이 제한됩니다. <a id="insecure-link" href="#">HTTPS로 열기</a>
     </div>
+    <!-- ===== 고정 페이지: 정보 + QR ===== -->
+    <section id="page-info" class="card" hidden>
+      <div class="view-head">
+        <h1>📌 내 고정 페이지</h1>
+        <span id="page-countdown" class="badge"></span>
+      </div>
+      <p class="hint">다른 기기에서 아래 QR 코드를 스캔하거나 주소를 열고 비밀번호를 입력하세요. 클립은 각각 1시간 뒤 삭제되고, <strong>마지막 클립이 도착한 뒤 6시간</strong>이 지나면 이 페이지도 삭제됩니다.</p>
+      <div class="qr-box"><canvas id="page-qr" class="qr" width="1" height="1" role="img" aria-label="고정 페이지 주소 QR 코드"></canvas></div>
+      <div class="link-box">
+        <input id="page-url" readonly>
+        <button type="button" id="btn-page-copy" class="secondary">주소 복사</button>
+      </div>
+      <div class="row">
+        <a class="button secondary" href="/">홈으로</a>
+        <button type="button" id="btn-page-delete" class="danger">페이지 삭제</button>
+      </div>
+    </section>
+
     <!-- ===== 새 클립 만들기 ===== -->
     <section id="compose" class="card" hidden>
-      <h1>붙여넣기</h1>
-      <p class="hint">텍스트나 이미지를 아래에 붙여넣으세요. (PC: <kbd>Ctrl/⌘</kbd>+<kbd>V</kbd>, 폰: 길게 눌러 붙여넣기)</p>
+      <h1 id="compose-title">붙여넣기</h1>
+      <p id="compose-hint" class="hint">텍스트나 이미지를 아래에 붙여넣으세요. (PC: <kbd>Ctrl/⌘</kbd>+<kbd>V</kbd>, 폰: 길게 눌러 붙여넣기)</p>
 
       <textarea id="text" rows="6" placeholder="여기에 붙여넣기…" autocomplete="off" spellcheck="false"></textarea>
 
@@ -37,13 +55,20 @@
 
       <div id="previews" class="previews"></div>
 
-      <div class="pin-row">
+      <div id="pin-row" class="pin-row">
         <label for="pin">비밀번호 (선택, 숫자 4자리)</label>
         <input id="pin" class="pin" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="off" placeholder="••••">
       </div>
 
       <button type="button" id="btn-share" class="primary big">공유 링크 만들기</button>
       <p id="compose-error" class="error" hidden></p>
+    </section>
+
+    <!-- ===== 고정 페이지: 받은 클립 ===== -->
+    <section id="page-clips" class="card" hidden>
+      <h2>받은 클립</h2>
+      <p id="page-empty" class="hint">아직 클립이 없어요. 위에서 보내면 이 페이지를 연 모든 기기에 나타납니다.</p>
+      <div id="page-clip-list" class="clip-list"></div>
     </section>
 
     <!-- ===== 생성 완료 ===== -->
@@ -62,11 +87,31 @@
       </div>
     </section>
 
+    <!-- ===== 고정 페이지 만들기 ===== -->
+    <section id="page-home" class="card" hidden>
+      <h2>📌 내 고정 페이지</h2>
+      <p class="hint">주소가 바뀌지 않는 나만의 페이지예요. 폰·PC에서 같은 주소로 계속 주고받을 수 있고, 클립은 각각 1시간 뒤 삭제됩니다. 마지막 클립이 도착한 뒤 6시간 동안 새 클립이 없으면 페이지도 삭제돼요.</p>
+      <div id="page-saved" hidden>
+        <div class="row">
+          <a id="page-saved-link" class="button primary" href="#">내 고정 페이지 열기</a>
+          <button type="button" id="btn-page-new" class="secondary">새 페이지 만들기</button>
+        </div>
+      </div>
+      <div id="page-new">
+        <div class="pin-row">
+          <label for="page-pin-new">비밀번호 (숫자 4자리)</label>
+          <input id="page-pin-new" class="pin" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="off" placeholder="••••">
+        </div>
+        <button type="button" id="btn-page-create" class="secondary big">고정 페이지 만들기</button>
+        <p id="page-create-error" class="error" hidden></p>
+      </div>
+    </section>
+
     <!-- ===== 코드로 열기 ===== -->
     <section id="open" class="card" hidden>
       <h2>코드로 열기</h2>
       <form id="open-form" class="link-box">
-        <input id="open-code" placeholder="예: ab3k9xyz" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64">
+        <input id="open-code" placeholder="예: ab3k9xyz 또는 고정 페이지 주소" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64">
         <button type="submit" class="secondary">열기</button>
       </form>
     </section>
@@ -74,7 +119,7 @@
     <!-- ===== 비밀번호 입력 ===== -->
     <section id="pin-gate" class="card" hidden>
       <h1>🔒 비밀번호 입력</h1>
-      <p class="hint">이 클립은 비밀번호로 보호되어 있습니다.</p>
+      <p id="pin-gate-hint" class="hint">이 클립은 비밀번호로 보호되어 있습니다.</p>
       <form id="pin-form" class="pin-form">
         <input id="pin-input" class="pin big" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="off" placeholder="••••" required>
         <button type="submit" class="primary">확인</button>
@@ -106,6 +151,7 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+  <script src="/qrcode.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

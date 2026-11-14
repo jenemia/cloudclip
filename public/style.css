@@ -126,3 +126,12 @@ input.pin.big { width: 9em; font-size: 24px; }
 
 .warn { background: color-mix(in srgb, #f59e0b 15%, var(--card)); border: 1px solid #f59e0b; border-radius: var(--radius); padding: 12px 16px; font-size: 14px; }
 .warn a { color: inherit; font-weight: 600; }
+
+/* ---------- persistent page ---------- */
+.qr-box { display: flex; justify-content: center; margin: 4px 0 16px; }
+.qr { width: min(260px, 100%); height: auto; aspect-ratio: 1; image-rendering: pixelated; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.clip-list { display: grid; gap: 14px; }
+.clip-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: grid; gap: 10px; }
+.clip-head { display: flex; align-items: center; gap: 8px; }
+.clip-head .meta { margin-right: auto; color: var(--muted); font-size: 13px; }
+.clip-head button { padding: 4px 10px; font-size: 13px; }

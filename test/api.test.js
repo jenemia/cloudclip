@@ -1,6 +1,6 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleApi, MAX_PIN_ATTEMPTS, TTL_SECONDS } from '../lib/api.js';
+import { handleApi, MAX_PIN_ATTEMPTS, MAX_PAGE_CLIPS, PAGE_TTL_SECONDS, TTL_SECONDS } from '../lib/api.js';
 
 /** Minimal in-memory stand-in for a Workers KV namespace (honours expiration). */
 class FakeKV {
@@ -24,10 +24,11 @@ beforeEach(() => { env = { CLIPS: new FakeKV() }; });
 
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
-async function call(method, path, { body, pin } = {}) {
+async function call(method, path, { body, pin, pagePin } = {}) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (pin !== undefined) headers['X-Clip-Pin'] = pin;
+  if (pagePin !== undefined) headers['X-Page-Pin'] = pagePin;
   const res = await handleApi(
     new Request(`https://clip.example.com${path}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined }),
     env,
@@ -114,4 +115,123 @@ test('unknown routes and bad ids 404; missing KV binding is reported', async () 
   const r = await call('GET', '/api/clips/abcdefgh');
   assert.equal(r.status, 500);
   assert.match(r.data.error, /CLIPS/);
+});
+
+// ---------------- persistent pages ----------------
+const newPage = async (pin = '1234') => (await call('POST', '/api/pages', { body: { pin } })).data;
+const sendClip = (pid, text = 'hi', pagePin = '1234') =>
+  call('POST', `/api/pages/${pid}/clips`, { body: { items: [{ type: 'text', text }] }, pagePin });
+const pageRecord = (pid) => env.CLIPS.store.get(`page:${pid}`);
+
+test('page: requires a 4-digit PIN and gets a stable /p/<id> URL', async () => {
+  assert.equal((await call('POST', '/api/pages', { body: {} })).status, 400);
+  assert.equal((await call('POST', '/api/pages', { body: { pin: '12' } })).status, 400);
+  const { status, data } = await call('POST', '/api/pages', { body: { pin: '1234' } });
+  assert.equal(status, 201);
+  assert.match(data.id, /^[a-z2-9]{16}$/);
+  assert.equal(data.url, `/p/${data.id}`);
+  assert.equal(data.expiresAt - data.createdAt, PAGE_TTL_SECONDS * 1000);
+  assert.equal(data.pinHash, undefined);
+
+  const meta = await call('GET', `/api/pages/${data.id}/meta`);
+  assert.equal(meta.status, 200);
+  assert.equal(meta.data.hasPin, true);
+  assert.equal(meta.data.clips, undefined);
+});
+
+test('page: every read/write needs the PIN', async () => {
+  const { id } = await newPage();
+  assert.equal((await call('GET', `/api/pages/${id}`)).status, 401);
+  assert.equal((await call('POST', `/api/pages/${id}/clips`, { body: { items: [{ type: 'text', text: 'x' }] } })).status, 401);
+  assert.equal((await call('GET', `/api/pages/${id}`, { pagePin: '1234' })).status, 200);
+  // The one-off clip header must not unlock a page.
+  assert.equal((await call('GET', `/api/pages/${id}`, { pin: '1234' })).status, 401);
+});
+
+test('page: clips keep a 1h TTL and each new clip pushes page expiry to 6h after it', async () => {
+  const { id, expiresAt: firstExpiry } = await newPage();
+  // Pretend the page is 5 hours old and nearly expired.
+  const rec = JSON.parse(pageRecord(id).value);
+  rec.expiresAt = Date.now() + 60 * 60 * 1000;
+  rec.lastClipAt = Date.now() - 5 * 60 * 60 * 1000;
+  pageRecord(id).value = JSON.stringify(rec);
+
+  const sent = await sendClip(id, 'hello');
+  assert.equal(sent.status, 201);
+  const clip = sent.data.clip;
+  assert.equal(clip.expiresAt - clip.createdAt, TTL_SECONDS * 1000);
+  assert.equal(sent.data.expiresAt - clip.createdAt, PAGE_TTL_SECONDS * 1000);
+  assert.ok(sent.data.expiresAt > firstExpiry - 1000);
+  assert.equal(env.CLIPS.store.get(`pclip:${id}:${clip.id}`).exp - Math.floor(clip.createdAt / 1000), TTL_SECONDS);
+  assert.equal(pageRecord(id).exp, Math.ceil(sent.data.expiresAt / 1000));
+
+  const view = await call('GET', `/api/pages/${id}`, { pagePin: '1234' });
+  assert.equal(view.data.clips.length, 1);
+  assert.equal(view.data.clips[0].texts, 1);
+  assert.equal(view.data.clips[0].items, undefined);
+
+  const got = await call('GET', `/api/pages/${id}/clips/${clip.id}`, { pagePin: '1234' });
+  assert.equal(got.data.items[0].text, 'hello');
+});
+
+test('page: expired clips disappear but the page and its URL stay', async () => {
+  const { id } = await newPage();
+  const { data } = await sendClip(id, 'old');
+  const rec = JSON.parse(pageRecord(id).value);
+  rec.clips[0].expiresAt = Date.now() - 1;
+  pageRecord(id).value = JSON.stringify(rec);
+
+  const view = await call('GET', `/api/pages/${id}`, { pagePin: '1234' });
+  assert.equal(view.status, 200);
+  assert.deepEqual(view.data.clips, []);
+  assert.equal((await call('GET', `/api/pages/${id}/clips/${data.clip.id}`, { pagePin: '1234' })).status, 404);
+  assert.equal((await sendClip(id, 'new')).status, 201);
+});
+
+test('page: gone 6 hours after the last clip', async () => {
+  const { id } = await newPage();
+  const rec = JSON.parse(pageRecord(id).value);
+  rec.expiresAt = Date.now() - 1;
+  pageRecord(id).value = JSON.stringify(rec);
+  assert.equal((await call('GET', `/api/pages/${id}/meta`)).status, 404);
+  assert.equal((await call('GET', `/api/pages/${id}`, { pagePin: '1234' })).status, 404);
+  assert.equal((await sendClip(id)).status, 404);
+});
+
+test('page: too many wrong PINs delete the page and its clips', async () => {
+  const { id } = await newPage();
+  const { data } = await sendClip(id);
+  for (let i = 1; i <= MAX_PIN_ATTEMPTS; i++) {
+    const r = await call('GET', `/api/pages/${id}`, { pagePin: '0000' });
+    assert.equal(r.status, i < MAX_PIN_ATTEMPTS ? 403 : 410);
+  }
+  assert.equal(env.CLIPS.store.has(`page:${id}`), false);
+  assert.equal(env.CLIPS.store.has(`pclip:${id}:${data.clip.id}`), false);
+  assert.equal((await call('GET', `/api/pages/${id}`, { pagePin: '1234' })).status, 404);
+});
+
+test('page: limits clips, deletes a clip, deletes the page', async () => {
+  const { id } = await newPage();
+  for (let i = 0; i < MAX_PAGE_CLIPS; i++) assert.equal((await sendClip(id, `c${i}`)).status, 201);
+  assert.equal((await sendClip(id, 'one too many')).status, 400);
+
+  const view = await call('GET', `/api/pages/${id}`, { pagePin: '1234' });
+  const before = pageRecord(id).exp;
+  const first = view.data.clips[0].id;
+  assert.equal((await call('DELETE', `/api/pages/${id}/clips/${first}`)).status, 401);
+  assert.equal((await call('DELETE', `/api/pages/${id}/clips/${first}`, { pagePin: '1234' })).status, 200);
+  assert.equal(pageRecord(id).exp, before, 'deleting a clip must not extend the page');
+  assert.equal(env.CLIPS.store.has(`pclip:${id}:${first}`), false);
+  assert.equal((await sendClip(id, 'fits again')).status, 201);
+
+  assert.equal((await call('DELETE', `/api/pages/${id}`, { pagePin: '1234' })).status, 200);
+  assert.equal(env.CLIPS.store.size, 0);
+});
+
+test('page: bad ids and routes 404', async () => {
+  assert.equal((await call('GET', '/api/pages/short/meta')).status, 404);
+  assert.equal((await call('GET', '/api/pages/zzzzzzzzzzzzzzzz/meta')).status, 404);
+  const { id } = await newPage();
+  assert.equal((await call('GET', `/api/pages/${id}/clips/notanid`, { pagePin: '1234' })).status, 404);
+  assert.equal((await call('PUT', `/api/pages/${id}`, { pagePin: '1234' })).status, 404);
 });

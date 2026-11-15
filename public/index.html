@@ -28,10 +28,9 @@
       </div>
       <p class="hint">다른 기기에서 아래 QR 코드를 스캔하거나 주소를 열고 비밀번호를 입력하세요. 클립은 각각 1시간 뒤 삭제되고, <strong>마지막 클립이 도착한 뒤 6시간</strong>이 지나면 이 페이지도 삭제됩니다.</p>
       <div class="qr-box"><canvas id="page-qr" class="qr" width="1" height="1" role="img" aria-label="고정 페이지 주소 QR 코드"></canvas></div>
-      <div class="link-box">
-        <input id="page-url" readonly>
-        <button type="button" id="btn-page-copy" class="secondary">주소 복사</button>
-      </div>
+      <label class="field-label" for="page-url">고정 페이지 주소</label>
+      <textarea id="page-url" class="url-field" rows="2" readonly aria-readonly="true" spellcheck="false"></textarea>
+      <button type="button" id="btn-page-copy" class="secondary block">주소 복사</button>
       <div class="row">
         <a class="button secondary" href="/">홈으로</a>
         <button type="button" id="btn-page-delete" class="danger">페이지 삭제</button>
@@ -91,6 +90,7 @@
     <section id="page-home" class="card" hidden>
       <h2>📌 내 고정 페이지</h2>
       <p class="hint">주소가 바뀌지 않는 나만의 페이지예요. 폰·PC에서 같은 주소로 계속 주고받을 수 있고, 클립은 각각 1시간 뒤 삭제됩니다. 마지막 클립이 도착한 뒤 6시간 동안 새 클립이 없으면 페이지도 삭제돼요.</p>
+      <p id="page-notice" class="notice" role="status" hidden></p>
       <div id="page-saved" hidden>
         <div class="row">
           <a id="page-saved-link" class="button primary" href="#">내 고정 페이지 열기</a>

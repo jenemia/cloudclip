@@ -475,6 +475,7 @@
 
     // Offer this device's earlier page if it is still alive.
     const saved = savedPageId();
+    if (new URLSearchParams(location.search).has('page')) return showPageGoneNotice();
     if (!saved) return;
     const meta = await api('GET', `/api/pages/${saved}/meta`).catch(() => null);
     if (meta?.ok) {
@@ -510,14 +511,14 @@
 
   async function initPage(pid) {
     const meta = await api('GET', `/api/pages/${pid}/meta`);
-    if (!meta.ok) return pageGone(meta.data.error, pid);
+    if (!meta.ok) return pageGone('gone', pid);
 
     const cached = store.get('sessionStorage', pinKey(pid));
     if (cached) {
       const res = await api('GET', `/api/pages/${pid}`, { pagePin: cached });
       if (res.ok) return openPage(pid, cached, res.data);
       store.del('sessionStorage', pinKey(pid));
-      if (res.status === 404 || res.status === 410) return pageGone(res.data.error, pid);
+      if (res.status === 404 || res.status === 410) return pageGone('gone', pid);
     }
     showPageGate(pid);
   }
@@ -543,7 +544,7 @@
         input.value = '';
         input.focus();
       } else {
-        pageGone(res.data.error, pid);
+        pageGone(res.status === 410 ? 'pin' : 'gone', pid);
       }
     });
     input.focus();
@@ -573,7 +574,7 @@
     $('btn-page-delete').onclick = async () => {
       if (!confirm('고정 페이지와 안에 있는 클립을 지금 모두 삭제할까요?')) return;
       const res = await api('DELETE', `/api/pages/${pid}`, { pagePin: pin });
-      if (res.ok) pageGone('고정 페이지를 삭제했습니다.', pid);
+      if (res.ok) pageGone('deleted', pid);
       else toast(res.data.error || '삭제 실패');
     };
 
@@ -622,7 +623,7 @@
         page.expiresAt = res.data.expiresAt;
         syncClips(res.data.clips);
       } else if ([401, 403, 404, 410].includes(res.status)) {
-        pageGone(res.data.error, page.id);
+        pageGone('gone', page.id);
       }
     } catch { /* offline: the next poll tries again */ } finally {
       page.polling = false;
@@ -696,7 +697,7 @@
   function tickPage() {
     if (!pageCtx) return;
     const left = page.expiresAt - Date.now();
-    if (left <= 0) { pageGone('마지막 클립 이후 6시간이 지나 고정 페이지가 삭제되었습니다.', page.id); return; }
+    if (left <= 0) { pageGone('expired', page.id); return; }
     const el = $('page-countdown');
     el.textContent = `⏱ 새 클립이 없으면 ${fmtClock(left)} 후 삭제`;
     el.classList.toggle('soon', left < 30 * 60000);
@@ -709,7 +710,9 @@
     $('page-empty').hidden = clipCards.size > 0;
   }
 
-  function pageGone(msg, pid) {
+  // A page that is gone (never issued, expired, deleted) sends the visitor to the home page,
+  // which explains why and offers to issue a new one.
+  function pageGone(reason, pid) {
     clearInterval(page.pollTimer);
     clearInterval(page.tickTimer);
     pageCtx = null;
@@ -719,7 +722,28 @@
       store.del('sessionStorage', pinKey(pid));
       if (savedPageId() === pid) store.del('localStorage', SAVED_PAGE_KEY);
     }
-    showMissing(msg || '고정 페이지가 없거나 만료되었습니다.');
+    location.replace(`/?page=${reason}`);
+  }
+
+  const PAGE_GONE_NOTICES = {
+    gone: '요청한 고정 페이지가 없거나 만료되었어요. 아래에서 새로 발급받으세요.',
+    expired: '마지막 클립 이후 6시간이 지나 고정 페이지가 삭제되었어요. 아래에서 새로 발급받으세요.',
+    deleted: '고정 페이지를 삭제했어요. 필요하면 아래에서 새로 발급받으세요.',
+    pin: '비밀번호를 여러 번 틀려 고정 페이지가 삭제되었어요. 아래에서 새로 발급받으세요.',
+  };
+
+  // Home page: show why we were redirected and put the cursor on the PIN field of the issue form.
+  function showPageGoneNotice() {
+    const reason = new URLSearchParams(location.search).get('page');
+    if (!reason || !PAGE_GONE_NOTICES[reason]) return;
+    history.replaceState(null, '', '/');
+    const note = $('page-notice');
+    note.textContent = PAGE_GONE_NOTICES[reason];
+    note.hidden = false;
+    $('page-saved').hidden = true;
+    $('page-new').hidden = false;
+    $('page-home').scrollIntoView({ block: 'center' });
+    $('page-pin-new').focus({ preventScroll: true });
   }
 
   // ================= HTTPS =================

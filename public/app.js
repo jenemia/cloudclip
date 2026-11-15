@@ -314,6 +314,8 @@
     $('btn-copy-link').onclick = async () => toast((await copyText(url)) ? '링크를 복사했어요' : '복사 실패');
     $('created-url').onclick = (e) => e.target.select();
     show('created');
+    // Google Ads / GA4 conversion (no-op unless ads.js is loaded and consent was given)
+    if (typeof window.ccTrack === 'function') window.ccTrack('generate_link', { has_pin: hasPin });
     clearCompose();
   }
 
@@ -498,6 +500,8 @@
       if (!res.ok) throw new Error(res.data.error || '고정 페이지를 만들지 못했습니다.');
       store.set('localStorage', SAVED_PAGE_KEY, res.data.id);
       store.set('sessionStorage', pinKey(res.data.id), pin);
+      // Conversion is sent here because the private page itself never loads the Google tag (sent via beacon).
+      if (typeof window.ccTrack === 'function') window.ccTrack('create_page');
       location.href = `/p/${res.data.id}`;
     } catch (e) {
       setError(errEl, e.message || '고정 페이지를 만들지 못했습니다.');
@@ -734,6 +738,13 @@
   const path = location.pathname.toLowerCase();
   const pageMatch = path.match(PAGE_PATH_RE);
   const id = path.slice(1);
+  if (pageMatch || ID_RE.test(id)) {
+    // Private clip / page: never index, never show marketing content.
+    $('about').hidden = true;
+    const robots = document.querySelector('meta[name="robots"]');
+    if (robots) robots.content = 'noindex, nofollow';
+    document.title = pageMatch ? 'CloudClip – 고정 페이지' : 'CloudClip – 클립';
+  }
   const netError = () => showMissing('불러오지 못했습니다. 네트워크를 확인하세요.');
   if (pageMatch) initPage(pageMatch[1]).catch(netError);
   else if (ID_RE.test(id)) initView(id).catch(netError);

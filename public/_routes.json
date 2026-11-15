@@ -1,5 +1,8 @@
 {
   "version": 1,
   "include": ["/*"],
-  "exclude": ["/", "/index.html", "/app.js", "/style.css", "/icon.svg", "/qrcode.js"]
+  "exclude": [
+    "/app.js", "/ads.js", "/qrcode.js", "/style.css", "/icon.svg", "/og.png", "/favicon-32.png",
+    "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest"
+  ]
 }
